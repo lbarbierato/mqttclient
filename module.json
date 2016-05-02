@@ -1,0 +1,13 @@
+{
+  "name": "mqttclient",
+  "version": "1.0.1",
+  "description": "mqtt",
+  "keywords": [
+    "mqtt"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "mqttpacket": "*"
+  }
+}
