@@ -42,9 +42,16 @@ struct Message
 class PacketId
 {
 public:
-    PacketId();
-    
-    int getNext();
+   PacketId()
+    {
+        next = 0;
+    }
+
+    int getNext()
+    {
+        return next = next % MAX_PACKET_ID + 1;
+    }
+
    
 private:
     static const int MAX_PACKET_ID = 65535;
@@ -129,9 +136,11 @@ public:
     
     int disconnect(resultHandler rh);
     
+    void run(void const *argument);
+    
 private:
 
-    void run(void const *argument);
+    
     int cycle(int timeout);
     int waitfor(int packet_type, Timer& atimer);
 	int keepalive();
@@ -195,11 +204,11 @@ template<class Network, class Timer, class Thread, class Mutex> void MQTT::Async
 }
 
 
-template<class Network, class Timer, class Thread, class Mutex> MQTT::Async<Network, Timer, Thread, Mutex>::Async(Network* network, Limits limits)  : limits(limits), packetid()
+template<class Network, class Timer, class Thread, class Mutex> MQTT::Async<Network, Timer, Thread, Mutex>::Async(Network* network, Limits limits)  : limits(limits), ping_timer(), packetid()
 {
 	this->thread = 0;
 	this->ipstack = network;
-	this->ping_timer = Timer();
+	//this->ping_timer = Timer();
 	this->ping_outstanding = 0;
 	   
 	// How to make these memory allocations portable?  I was hoping to avoid the heap
@@ -219,7 +228,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
     int sent = 0;
     
     while (sent < length)
-        sent += ipstack->write(&buf[sent], length, timeout);
+        sent += ipstack->write((unsigned char*)&buf[sent], length, timeout);
 	if (sent == length)
 	    ping_timer.countdown(this->keepAliveInterval); // record the fact that we have successfully sent the packet    
     return sent;
@@ -243,7 +252,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
             rc = MQTTPACKET_READ_ERROR; /* bad data */
             goto exit;
         }
-        rc = ipstack->read(&c, 1, timeout);
+        rc = ipstack->read((unsigned char*)&c, 1, timeout);
         if (rc != 1)
             goto exit;
         *value += (c & 127) * multiplier;
@@ -268,16 +277,16 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
     int rem_len = 0;
 
     /* 1. read the header byte.  This has the packet type in it */
-    if (ipstack->read(readbuf, 1, timeout) != 1)
+    if (ipstack->read((unsigned char*)readbuf, 1, timeout) != 1)
         goto exit;
 
     len = 1;
     /* 2. read the remaining length.  This is variable in itself */
     decodePacket(&rem_len, timeout);
-    len += MQTTPacket_encode(readbuf + 1, rem_len); /* put the original remaining length back into the buffer */
+    len += MQTTPacket_encode((unsigned char*)readbuf + 1, rem_len); /* put the original remaining length back into the buffer */
 
     /* 3. read the rest of the buffer using a callback to supply the rest of the data */
-    if (ipstack->read(readbuf + len, rem_len, timeout) != rem_len)
+    if (ipstack->read((unsigned char*)readbuf + len, rem_len, timeout) != rem_len)
         goto exit;
 
     header.byte = readbuf[0];
@@ -321,7 +330,8 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 			if (this->thread)
 			{
 				Result res = {this, 0};
-            	if (MQTTDeserialize_connack(&res.rc, readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
+				bool sessionPresent = false;
+            	if (MQTTDeserialize_connack((unsigned char*)&sessionPresent,(unsigned char*)&res.rc, (unsigned char*)readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
                 	;
 				connectHandler(&res);
 				connectHandler.detach(); // only invoke the callback once
@@ -335,17 +345,17 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
         case PUBLISH:
 			MQTTString topicName;
 			Message msg;
-			rc = MQTTDeserialize_publish((int*)&msg.dup, (int*)&msg.qos, (int*)&msg.retained, (int*)&msg.id, &topicName,
-								 (char**)&msg.payload, (int*)&msg.payloadlen, readbuf, limits.MAX_MQTT_PACKET_SIZE);;
+			rc = MQTTDeserialize_publish((unsigned char*)&msg.dup, (int*)&msg.qos, (unsigned char*)&msg.retained, (short unsigned int*)&msg.id, &topicName,
+								 (unsigned char**)&msg.payload, (int*)&msg.payloadlen, (unsigned char*)readbuf, limits.MAX_MQTT_PACKET_SIZE);;
 			if (msg.qos == QOS0)
 				deliverMessage(&topicName, &msg);
             break;
         case PUBREC:
    	        int type, dup, mypacketid;
-   	        if (MQTTDeserialize_ack(&type, &dup, &mypacketid, readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
+   	        if (MQTTDeserialize_ack((unsigned char*)&type, (unsigned char*)&dup, (unsigned short*)&mypacketid, (unsigned char*)readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
    	            ; 
    	        // must lock this access against the application thread, if we are multi-threaded
-			len = MQTTSerialize_ack(buf, limits.MAX_MQTT_PACKET_SIZE, PUBREL, 0, mypacketid);
+			len = MQTTSerialize_ack((unsigned char*)buf, limits.MAX_MQTT_PACKET_SIZE, PUBREL, 0, mypacketid);
 		    rc = sendPacket(len, timeout); // send the PUBREL packet
 			if (rc != len) 
 				goto exit; // there was a problem
@@ -376,7 +386,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 			rc = -1;
 		else
 		{
-			int len = MQTTSerialize_pingreq(buf, limits.MAX_MQTT_PACKET_SIZE);
+			int len = MQTTSerialize_pingreq((unsigned char*)buf, limits.MAX_MQTT_PACKET_SIZE);
 			rc = sendPacket(len, 1000); // send the ping packet
 			if (rc != len) 
 				rc = -1; // indicate there's a problem
@@ -392,8 +402,9 @@ exit:
 
 template<class Network, class Timer, class Thread, class Mutex> void MQTT::Async<Network, Timer, Thread, Mutex>::run(void const *argument)
 {
-	while (true)
-		cycle(ping_timer.left_ms());
+	(void)argument;
+	//while (true)
+	cycle(ping_timer.left_ms());
 }
 
 
@@ -423,20 +434,22 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
     
     this->keepAliveInterval = options->keepAliveInterval;
 	ping_timer.countdown(this->keepAliveInterval);
-    int len = MQTTSerialize_connect(buf, limits.MAX_MQTT_PACKET_SIZE, options);
+    int len = MQTTSerialize_connect((unsigned char*)buf, limits.MAX_MQTT_PACKET_SIZE, options);
+    printf("\nConnect packet length is %d", len);
     int rc = sendPacket(len, connect_timer.left_ms()); // send the connect packet
 	if (rc != len) 
 		goto exit; // there was a problem
     
     if (resultHandler == 0)     // wait until the connack is received 
     {
-        // this will be a blocking call, wait for the connack
+       /* // this will be a blocking call, wait for the connack
 		if (waitfor(CONNACK, connect_timer) == CONNACK)
 		{
         	int connack_rc = -1;
         	if (MQTTDeserialize_connack(&connack_rc, readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
 	        	rc = connack_rc;
 	    }
+	*/
     }
     else
     {
@@ -445,6 +458,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
         
         // start background thread            
         this->thread = new Thread((void (*)(void const *argument))&MQTT::Async<Network, Timer, Thread, Mutex>::threadfn, (void*)this);
+        this->ipstack->setCallback(this);
     }
     
 exit:
@@ -486,7 +500,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
     if (resultHandler == 0)
     {
         // this will block
-        if (waitfor(SUBACK, atimer) == SUBACK)
+       /* if (waitfor(SUBACK, atimer) == SUBACK)
         {
             int count = 0, grantedQoS = -1, mypacketid;
             if (MQTTDeserialize_suback(&mypacketid, 1, &count, &grantedQoS, readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
@@ -494,17 +508,17 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
             if (rc != 0x80)
             {
             	for (int i = 0; i < limits.MAX_MESSAGE_HANDLERS; ++i)
-				{
-					if (messageHandlers[i].topic == 0)
-					{
-						messageHandlers[i].topic = topicFilter;
-						messageHandlers[i].fp.attach(messageHandler);
-						rc = 0;
-						break;
-					}
-				}
+		{
+			if (messageHandlers[i].topic == 0)
+			{
+				messageHandlers[i].topic = topicFilter;
+				messageHandlers[i].fp.attach(messageHandler);
+				rc = 0;
+				break;
+			}
+		}
             }
-        }
+        }*/
     }
     else
     {
@@ -554,7 +568,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 	if (message->qos == QOS1 || message->qos == QOS2)
 		message->id = packetid.getNext();
     
-	int len = MQTTSerialize_publish(buf, limits.MAX_MQTT_PACKET_SIZE, 0, message->qos, message->retained, message->id, topic, (char*)message->payload, message->payloadlen);
+	int len = MQTTSerialize_publish((unsigned char*)buf, limits.MAX_MQTT_PACKET_SIZE, 0, message->qos, message->retained, message->id, topic, (unsigned char*)message->payload, message->payloadlen);
     int rc = sendPacket(len, atimer.left_ms()); // send the subscribe packet
 	if (rc != len) 
 		goto exit; // there was a problem
@@ -562,7 +576,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
     /* wait for acks */
     if (resultHandler == 0)
     {
- 		if (message->qos == QOS1)
+ 	/*	if (message->qos == QOS1)
 		{
 	        if (waitfor(PUBACK, atimer) == PUBACK)
     	    {
@@ -581,6 +595,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 			}
 
 		}
+	*/
     }
     else
     {
@@ -596,7 +611,7 @@ exit:
 template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<Network, Timer, Thread, Mutex>::disconnect(resultHandler resultHandler)
 {  
     Timer timer = Timer(limits.command_timeout_ms);     // we might wait for incomplete incoming publishes to complete
-    int len = MQTTSerialize_disconnect(buf, limits.MAX_MQTT_PACKET_SIZE);
+    int len = MQTTSerialize_disconnect((unsigned char*)buf, limits.MAX_MQTT_PACKET_SIZE);
     int rc = sendPacket(len, timer.left_ms());   // send the disconnect packet
     
     return (rc == len) ? 0 : -1;

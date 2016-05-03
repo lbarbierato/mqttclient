@@ -43,4 +43,19 @@ class Countdown
         int interval_end_ms; 
 };
 
+class DummyThread
+{
+	public:
+	DummyThread(void (*)(void const *argument), void* arg){
+		(void)arg;
+	}
+
+};
+
+class DummyMutex
+{
+	
+
+};
+
 #endif

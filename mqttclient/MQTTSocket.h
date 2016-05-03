@@ -6,9 +6,11 @@
 #include "sockets/TCPStream.h"
 #include "minar/minar.h"
 #include "core-util/FunctionPointer.h"
+#include "MQTTAsync.h"
 
 char out_success[] = "{{success}}\n{{end}}\n";
 class TCPClient;
+class MQTTSocket;
 
 using namespace mbed::Sockets::current;
 typedef mbed::util::FunctionPointer2<void, bool, TCPClient*> fpterminate_t;
@@ -16,12 +18,17 @@ typedef mbed::util::FunctionPointer2<void, bool, TCPClient*> fpterminate_t;
 
 class TCPClient {
     public:
-        TCPClient(socket_stack_t stack):_stream(stack), _disconnected(true) {
+        TCPClient(socket_stack_t stack, mbed::util::FunctionPointer0<void> ptr):_stream(stack), _disconnected(true), ptr(ptr) {
             _stream.setOnError(TCPStream::ErrorHandler_t(this, &TCPClient::onError));
+            
         }
 
         ~TCPClient(){
             disconnect();
+        }
+        
+        void setCallback(MQTT::Async <MQTTSocket, Countdown, DummyThread,DummyMutex> *client){
+        	this->client = client;
         }
 
         bool disconnect() {
@@ -40,7 +47,7 @@ class TCPClient {
             _resolvedAddr.setAddr(&sa);
             /* TODO: add support for getting AF from addr */
             /* Open the socket */
-            _resolvedAddr.fmtIPv6(_buffer, sizeof(_buffer));
+            _resolvedAddr.fmtIPv4(_buffer, sizeof(_buffer));
             printf("MBED: Resolved %s to %s\r\n", domain, _buffer);
             /* Register the read handler */
             _stream.setOnReadable(TCPStream::ReadableHandler_t(this, &TCPClient::onRx));
@@ -55,11 +62,13 @@ class TCPClient {
             (void) s;
             _disconnected = false;
             printf ("MBED: connected to host.");
+            minar::Scheduler::postCallback(ptr.bind());
         }
 
         bool connect(char *host_addr, uint16_t port = 1883) {
             _disconnected = true;
             socket_error_t err = _stream.open(SOCKET_AF_INET4);
+            _stream.setNagle(false);
             TEST_ASSERT_EQUAL_MESSAGE(SOCKET_ERROR_NONE, err, "MBED: Failed to open socket!");
             if (SOCKET_ERROR_NONE == err) {
                 _port = port;
@@ -74,6 +83,9 @@ class TCPClient {
 
         void onRx(Socket* s) {
             (void) s;
+            printf("Received something\n");
+            if(client!=NULL)
+            	client->run(NULL);
         }
 
         int recv(void * buffer, size_t len) {
@@ -101,9 +113,11 @@ class TCPClient {
         }
 
         int send(const void *buff, int len) {
+            //_stream.setNagle(false);
             _unacked += len;
             printf ("MBED: Sending (%d bytes) to host: %s", _unacked, out_success);
             socket_error_t err = _stream.send(buff, len);
+            printf("Send - MBED: Socket Error: %s (%d)\r\n", socket_strerror(err), err);
             TEST_ASSERT_EQUAL_MESSAGE(SOCKET_ERROR_NONE, err, "MBED: TCPClient failed to send data!");
             if (SOCKET_ERROR_NONE == err) {
                 return len;
@@ -116,7 +130,9 @@ class TCPClient {
         char _buffer[1024];
         uint16_t _port;
         volatile bool _disconnected;
-        volatile size_t _unacked;
+        volatile size_t _unacked=0;
+	MQTT::Async <MQTTSocket, Countdown, DummyThread,DummyMutex> *client = NULL;
+	mbed::util::FunctionPointer0<void> ptr;
 };
 
 
@@ -145,7 +161,12 @@ public:
     {
         return mysock.disconnect();
     }
-    MQTTSocket():mysock(SOCKET_STACK_LWIP_IPV4) {
+    
+    void setCallback(MQTT::Async <MQTTSocket, Countdown, DummyThread,DummyMutex> *client){
+    	mysock.setCallback(client);
+    }
+    
+    MQTTSocket(mbed::util::FunctionPointer0<void> ptr):mysock(SOCKET_STACK_LWIP_IPV4, ptr) {
     }
     
 private:
