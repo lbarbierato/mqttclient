@@ -71,7 +71,7 @@ typedef struct limits
 	{
 		MAX_MQTT_PACKET_SIZE = 100;
 		MAX_MESSAGE_HANDLERS = 5;
-		MAX_CONCURRENT_OPERATIONS = 1; // 1 indicates single-threaded mode - set to >1 for multithreaded mode
+		MAX_CONCURRENT_OPERATIONS = 5; // 1 indicates single-threaded mode - set to >1 for multithreaded mode
 		command_timeout_ms = 30000;
 	}
 } Limits;
@@ -180,9 +180,11 @@ private:
     {
     	unsigned short id;
     	resultHandlerFP fp;
-    	const char* topic;         // if this is a publish, store topic name in case republishing is required
-    	Message* message;    // for publish, 
-    	Timer timer;         // to check if the command has timed out
+    	const char* topic;         // if this is a publish, store topic name in case republishing is required. If this is a subscribe, store the topic name while waiting for SUBACK
+    	Message* message;    // for publish
+    	messageHandler mh;   //to set the message handler for a given topic, after SUBACK is received
+    	Timer timer;         // to check if the command has timed out, not needed in pure async version for mbed OS
+    	
     } *operations;           // result handlers are indexed by packet ids
 
 	static void threadfn(void* arg);
@@ -340,8 +342,35 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
         case PUBACK:
         	if (this->thread)
         		; //call resultHandler
+        	break;
         case SUBACK:
-            break;
+        	{
+		    int count = 0, grantedQoS = -1, mypacketid;
+		    if (MQTTDeserialize_suback((unsigned short*)&mypacketid, 1, &count, &grantedQoS, (unsigned char*)readbuf, limits.MAX_MQTT_PACKET_SIZE) == 1)
+			rc = grantedQoS; // 0, 1, 2 or 0x80 
+		    for(int j = 0; j< limits.MAX_CONCURRENT_OPERATIONS; j++)
+		    {
+			    if(operations[j].id == mypacketid)
+			    {   
+			   	if(rc != 0x80)
+			   	{
+				    	for (int i = 0; i < limits.MAX_MESSAGE_HANDLERS; ++i)
+					{
+						if (messageHandlers[i].topic == 0)
+						{
+							messageHandlers[i].topic = operations[j].topic;
+							messageHandlers[i].fp.attach(operations[j].mh);
+							rc = 0;
+							break;
+						}
+					}
+				 }
+				 operations[j].id = 0; 
+				 break;
+			     }
+		    }
+		    break;
+		}
         case PUBLISH:
 			MQTTString topicName;
 			Message msg;
@@ -491,11 +520,16 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 	atimer.countdown(limits.command_timeout_ms);
     MQTTString topic = {(char*)topicFilter, 0, 0};
     
-    int len = MQTTSerialize_subscribe(buf, limits.MAX_MQTT_PACKET_SIZE, 0, packetid.getNext(), 1, &topic, (int*)&qos);
+    int id = packetid.getNext();
+    operations[index].id = id;
+    int len = MQTTSerialize_subscribe((unsigned char*)buf, limits.MAX_MQTT_PACKET_SIZE, 0, id, 1, &topic, (int*)&qos);
     int rc = sendPacket(len, atimer.left_ms()); // send the subscribe packet
 	if (rc != len) 
 		goto exit; // there was a problem
     
+    operations[index].topic = topicFilter;
+    operations[index].mh = messageHandler;
+				
     /* wait for suback */
     if (resultHandler == 0)
     {
@@ -525,8 +559,10 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
         // set subscribe response callback function
         
     }
+    return rc;
     
 exit:
+    operations[index].id = 0;
     return rc;
 }
 

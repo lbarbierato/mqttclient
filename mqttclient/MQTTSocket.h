@@ -84,8 +84,11 @@ class TCPClient {
         void onRx(Socket* s) {
             (void) s;
             printf("Received something\n");
-            if(client!=NULL)
+            if(client!=NULL){
+                //mbed::util::FunctionPointer1<void, void const*> cycleptr(client, &MQTT::Async<MQTTSocket, Countdown, DummyThread, DummyMutex>::run);
+                //minar::Scheduler::postCallback(cycleptr.bind(NULL));
             	client->run(NULL);
+            }
         }
 
         int recv(void * buffer, size_t len) {
