@@ -1,8 +1,6 @@
-MQTTClient for mbed yotta. (relied on MQTTPacket)
-Merged latest codes from https://developer.mbed.org/teams/mqtt/code/MQTT/ and https://github.com/eclipse/paho.mqtt.embedded-c
-Current MQTTClient available are not working on yotta for TCPSocketConnection.h is removed. I tried to use sockets module of yotta to get it work again.
+MQTTClient for mbed OS. (relies on MQTTPacket)
+Based on https://developer.mbed.org/teams/mqtt/code/MQTT/ and https://github.com/eclipse/paho.mqtt.embedded-c
 
-Now it has no compiling error against k64f gcc, but not tested yet. And MQTTSocket timeout has not be implemented.
-Hope more people make it better and better.
+The original mbed OS socket adaptation has been made by changqian9 AT gmail.com
 
-changqian9 AT gmail.com
+This work was done during my Master Thesis internship at the Joint Open Lab SWARM
