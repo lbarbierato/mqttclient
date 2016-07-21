@@ -69,7 +69,7 @@ typedef struct limits
 		
 	limits()
 	{
-		MAX_MQTT_PACKET_SIZE = 100;
+		MAX_MQTT_PACKET_SIZE = 500;
 		MAX_MESSAGE_HANDLERS = 5;
 		MAX_CONCURRENT_OPERATIONS = 5; // 1 indicates single-threaded mode - set to >1 for multithreaded mode
 		command_timeout_ms = 30000;
@@ -143,7 +143,7 @@ private:
     
     int cycle(int timeout);
     int waitfor(int packet_type, Timer& atimer);
-	int keepalive();
+	void keepalive();
 	int findFreeOperation();
 
     int decodePacket(int* value, int timeout);
@@ -183,7 +183,7 @@ private:
     	const char* topic;         // if this is a publish, store topic name in case republishing is required. If this is a subscribe, store the topic name while waiting for SUBACK
     	Message* message;    // for publish
     	messageHandler mh;   //to set the message handler for a given topic, after SUBACK is received
-    	Timer timer;         // to check if the command has timed out, not needed in pure async version for mbed OS
+    	Timer timer;         // to check if the command has timed out
     	
     } *operations;           // result handlers are indexed by packet ids
 
@@ -227,11 +227,13 @@ template<class Network, class Timer, class Thread, class Mutex> MQTT::Async<Netw
 
 template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<Network, Timer, Thread, Mutex>::sendPacket(int length, int timeout)
 {
-    int sent = 0;
+    int sent = 0, ret = 0;
     
-    while (sent < length)
-        sent += ipstack->write((unsigned char*)&buf[sent], length, timeout);
-	if (sent == length)
+    while (ret!=-1 && sent < length){
+       	 ret = ipstack->write((unsigned char*)&buf[sent], length, timeout);
+       	 sent+= ret !=-1 ? ret : 0;
+    }
+    if (sent == length)
 	    ping_timer.countdown(this->keepAliveInterval); // record the fact that we have successfully sent the packet    
     return sent;
 }
@@ -337,6 +339,8 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
                 	;
 				connectHandler(&res);
 				connectHandler.detach(); // only invoke the callback once
+				mbed::util::FunctionPointer0<void> keepalive(this, &MQTT::Async<Network, Timer, Thread, Mutex>::keepalive);
+            			minar::Scheduler::postCallback(keepalive.bind()).period(minar::milliseconds(30000));
 			}
 			break;
         case PUBACK:
@@ -396,13 +400,13 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 			ping_outstanding = false;
             break;
     }
-	keepalive();
+	//keepalive();
 exit:
     return packet_type;
 }
 
 
-template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<Network, Timer, Thread, Mutex>::keepalive()
+template<class Network, class Timer, class Thread, class Mutex> void MQTT::Async<Network, Timer, Thread, Mutex>::keepalive()
 {
 	int rc = 0;
 
@@ -425,7 +429,7 @@ template<class Network, class Timer, class Thread, class Mutex> int MQTT::Async<
 	}
 
 exit:
-	return rc;
+	return /*rc*/;
 }
 
 
